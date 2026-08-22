@@ -1,0 +1,9 @@
+data/raw
+.env
+__pycache__/
+
+finsight_project_plan.md
+
+finsight/
+
+
