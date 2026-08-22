@@ -89,7 +89,7 @@ def main():
         html = client.download(filing)
 
         (raw_dir / filing.filename).write_text(html)
-        metadata[ticker] = asdict(filing) | {"file": filing.filename}
+        metadata[ticker] = asdict(filing) | {"fiscal_year": filing.fiscal_year,"file": filing.filename}
         print(f"{ticker}: saved {filing.filename} ({len(html) // 1024} KB)")
 
     (raw_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
