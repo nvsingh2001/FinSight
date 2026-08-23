@@ -14,3 +14,5 @@ neo4j
 fastapi
 pydantic
 uvicorn
+streamlit
+langgraph
