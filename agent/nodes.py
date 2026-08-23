@@ -1,0 +1,103 @@
+import os
+import re
+
+from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_neo4j import Neo4jGraph
+from langchain_ollama import ChatOllama
+from langchain_qdrant import QdrantVectorStore
+
+from agent.prompts import CYPHER_PROMPT, GENERATE_PROMPT, GRADE_PROMPT, ROUTER_PROMPT
+from agent.state import AgentState
+
+FORBIDDEN_CYPHER = re.compile(
+    r"\b(CREATE|DELETE|DETACH|MERGE|SET|REMOVE|DROP)\b", re.IGNORECASE
+)
+
+
+class AgentNodes:
+    """Node implementations for the FinSight agent graph."""
+
+    def __init__(self) -> None:
+        self.llm = ChatOllama(
+            model="gpt-oss:120b-cloud",
+            base_url="https://ollama.com",
+            client_kwargs={
+                "headers": {"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"}
+            },
+            temperature=0,
+        )
+
+        self.retriever = QdrantVectorStore.from_existing_collection(
+            embedding=FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
+            collection_name="finsight_filings",
+            url=os.environ["QDRANT_URL"],
+            api_key=os.environ["QDRANT_API_KEY"],
+        ).as_retriever(search_kwargs={"k": 6})
+
+        self.graph = Neo4jGraph(
+            url=os.environ["NEO4J_URI"],
+            username=os.environ["NEO4J_USERNAME"],
+            password=os.environ["NEO4J_PASSWORD"],
+            database=os.environ["NEO4J_DATABASE"],
+        )
+
+    def _ask(self, prompt):
+        return self.llm.invoke(prompt).content.strip()
+
+    def route(self, state: AgentState):
+        answer = self._ask(ROUTER_PROMPT.format(question=state["question"])).lower()
+        return {
+            "route": answer if answer in ("vector", "graph", "hybrid") else "hybrid"
+        }
+
+    def retrieve_vector(self, state: AgentState):
+        return {"documents": self.retriever.invoke(state["question"])}
+
+    def retrieve_graph(self, state: AgentState):
+        cypher = self._ask(
+            CYPHER_PROMPT.format(
+                schema=self.graph.get_schema, question=state["question"]
+            )
+        )
+
+        cypher = re.sub(r"^```(?:cypher)?|```$", "", cypher, flags=re.MULTILINE).strip()
+
+        if FORBIDDEN_CYPHER.search(cypher):
+            return {"graph_results": []}
+
+        try:
+            return {"graph_results": self.graph.query(cypher)}
+        except Exception as e:
+            print(f"cypher failed: {e}")
+            return {"graph_results": []}
+
+    def generate(self, state: AgentState):
+        docs = "\n\n".join(
+            f"[{d.metadata['ticker']} / {d.metadata['section']}]\n{d.page_content}"
+            for d in state.get("documents", [])
+        )
+
+        answer = self._ask(
+            GENERATE_PROMPT.format(
+                graph_results=state.get("graph_results", []) or "none",
+                documents=docs or "none",
+                question=state["question"],
+            )
+        )
+
+        return {"generation": answer}
+
+    def grade(self, state: AgentState):
+        context = f"{state.get('graph_results', [])}\n{state.get('documents', [])}"
+        verdict = self._ask(
+            GRADE_PROMPT.format(
+                question=state["question"],
+                context=context[:6000],
+                generation=state["generation"],
+            )
+        ).lower()
+
+        return {
+            "verdict": verdict if verdict == "retry" else "useful",
+            "retry_count": state.get("retry_count", 0) + 1,
+        }
