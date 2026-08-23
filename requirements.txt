@@ -1,5 +1,7 @@
 langchain
 langchain-community
+langchain_experimental
+langchain_neo4j
 fastembed
 langchain-qdrant
 qdrant-client
