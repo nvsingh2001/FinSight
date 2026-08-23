@@ -31,6 +31,7 @@ class EdgarClient:
     TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
     SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
     ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{doc}"
+    FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 
     def __init__(self, user_agent, request_delay=0.2):
         self.session = requests.Session()
@@ -75,6 +76,9 @@ class EdgarClient:
             doc=filing.primary_doc,
         )
         return self._get(url).text
+
+    def company_facts(self, cik):
+        return self._get(self.FACTS_URL.format(cik=cik)).json()
 
 
 def main():

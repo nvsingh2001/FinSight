@@ -8,3 +8,4 @@ python-dotenv
 beautifulsoup4
 lxml
 langchain-ollama
+neo4j
