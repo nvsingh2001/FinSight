@@ -1,3 +1,4 @@
+import json
 import os
 
 import requests
@@ -23,6 +24,18 @@ def ask(question):
     resp = requests.post(f"{API_URL}/query", json={"question": question}, timeout=180)
     resp.raise_for_status()
     return resp.json()
+
+def ask_stream(question):
+    resp = requests.post(
+        f"{API_URL}/query/stream",
+        json={"question": question},
+        stream=True,
+        timeout=180,
+    )
+    resp.raise_for_status()
+    for line in resp.iter_lines():
+        if line:
+            yield json.loads(line)
 
 
 st.set_page_config(page_title="FinSight", page_icon="📊")
@@ -58,15 +71,25 @@ if question:
     with st.chat_message("user"):
         st.write(question)
     with st.chat_message("assistant"):
-        with st.spinner("Routing, retrieving, generating..."):
-            try:
-                result = ask(question)
-            except requests.HTTPError as e:
-                st.error(f"API error {e.response.status_code}: {e.response.text[:200]}")
-                st.stop()
-            except requests.RequestException:
-                st.error(f"Could not reach the FinSight API at {API_URL}. Is it running?")
-                st.stop()
-        st.write(result["answer"])
-        st.caption(f"answered via {ROUTE_LABELS.get(result['route'], result['route'])}")
-    st.session_state.history.append({"question": question, **result})
+        status = st.status("thinking...", expanded=False)
+        box = st.empty()
+        buf, meta = "", {}
+        try:
+            for ev in ask_stream(question):
+                if ev["type"] == "progress":
+                    status.update(label=ev["stage"])
+                elif ev["type"] == "token":
+                    buf += ev["text"]
+                    box.markdown(buf + "▌")
+                elif ev["type"] == "revising":
+                    buf = ""
+                    box.empty()
+                    status.update(label="first draft rejected, revising...")
+                elif ev["type"] == "done":
+                    meta = ev
+        except requests.RequestException:
+            st.error(f"Could not reach the FinSight API at {API_URL}. Is it running?")
+            st.stop()
+        box.markdown(buf)
+        status.update(state="complete", label=f"answered via {ROUTE_LABELS.get(meta.get('route'), '?')}")
+    st.session_state.history.append({"question": question, "answer": buf, "route": meta.get("route", "?")})

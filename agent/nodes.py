@@ -27,6 +27,15 @@ class AgentNodes:
             temperature=0,
         )
 
+        self.fast_llm = ChatOllama(
+            model="gpt-oss:20b-cloud",
+            base_url="https://ollama.com",
+            client_kwargs={
+                "headers": {"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"}
+            },
+            temperature=0,
+        )
+
         self.retriever = QdrantVectorStore.from_existing_collection(
             embedding=FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
             collection_name="finsight_filings",
@@ -41,11 +50,11 @@ class AgentNodes:
             database=os.environ["NEO4J_DATABASE"],
         )
 
-    def _ask(self, prompt):
-        return self.llm.invoke(prompt).content.strip()
+    def _ask(self, prompt, llm):
+        return llm.invoke(prompt).content.strip()
 
     def route(self, state: AgentState):
-        answer = self._ask(ROUTER_PROMPT.format(question=state["question"])).lower()
+        answer = self._ask(ROUTER_PROMPT.format(question=state["question"]), llm=self.fast_llm).lower()
         return {
             "route": answer if answer in ("vector", "graph", "hybrid") else "hybrid"
         }
@@ -57,7 +66,8 @@ class AgentNodes:
         cypher = self._ask(
             CYPHER_PROMPT.format(
                 schema=self.graph.get_schema, question=state["question"]
-            )
+            ),
+            llm=self.llm
         )
 
         cypher = re.sub(r"^```(?:cypher)?|```$", "", cypher, flags=re.MULTILINE).strip()
@@ -82,7 +92,8 @@ class AgentNodes:
                 graph_results=state.get("graph_results", []) or "none",
                 documents=docs or "none",
                 question=state["question"],
-            )
+            ),
+            llm=self.llm
         )
 
         return {"generation": answer}
@@ -94,7 +105,8 @@ class AgentNodes:
                 question=state["question"],
                 context=context[:6000],
                 generation=state["generation"],
-            )
+            ),
+            llm=self.fast_llm
         ).lower()
 
         return {
