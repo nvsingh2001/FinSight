@@ -1,7 +1,9 @@
+import json
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.graph import build_graph
@@ -19,6 +21,14 @@ app = FastAPI(
     description="Hybrid RAG + Knowledge graph copilot over SEC 10-K filings",
     lifespan=lifespan,
 )
+
+NODE_LABELS = {
+    "route": "routing the question",
+    "retrieve_vector": "searching filings",
+    "retrieve_graph": "querying knowledge graph",
+    "generate": "drafting answer",
+    "grade": "checking answer against sources",
+}
 
 
 class QueryRequest(BaseModel):
@@ -46,3 +56,46 @@ def query(req: QueryRequest, request: Request):
         route=result["route"],
         retries=result["retry_count"],
     )
+
+
+@app.post("/query/stream")
+async def query_stream(req: QueryRequest, request: Request):
+    agent = request.app.state.agent
+
+    async def events():
+        last_node = None
+        streamed = False
+        final = {}
+
+        async for ev in agent.astream_events(
+            {"question": req.question, "retry_count": 0}, version="v2"
+        ):
+            kind = ev["event"]
+            node = ev.get("metadata", {}).get("langgraph_node")
+
+            if kind == "on_chain_start" and node in NODE_LABELS and node != last_node:
+                last_node = node
+                if node == "route" and streamed:
+                    streamed = False
+                    yield json.dumps({"type": "revising"}) + "\n"
+                yield (
+                    json.dumps({"type": "progress", "stage": NODE_LABELS[node]}) + "\n"
+                )
+            elif kind == "on_chat_model_stream" and node == "generate":
+                text = ev["data"]["chunk"].content
+                if text:
+                    streamed = True
+                    yield json.dumps({"type": "token", "text": text}) + "\n"
+
+            elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
+                final = ev["data"]["output"]
+
+        yield json.dumps(
+            {
+                "type": "done",
+                "route": final.get("route"),
+                "retries": final.get("retry_count", 0),
+            }
+        ) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
