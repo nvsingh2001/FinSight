@@ -38,6 +38,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     route: str
+    year: str
     retries: int
 
 
@@ -54,6 +55,7 @@ def query(req: QueryRequest, request: Request):
     return QueryResponse(
         answer=result["generation"],
         route=result["route"],
+        year=result["year"],
         retries=result["retry_count"],
     )
 
@@ -94,6 +96,7 @@ async def query_stream(req: QueryRequest, request: Request):
             {
                 "type": "done",
                 "route": final.get("route"),
+                "year": final.get("year"),
                 "retries": final.get("retry_count", 0),
             }
         ) + "\n"
