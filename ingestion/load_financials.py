@@ -91,11 +91,12 @@ def main():
     )
 
     try:
-        for ticker, meta in metadata.items():
-            facts = client.company_facts(meta["cik"])
+        for ticker, filings in metadata.items():
+            cik = filings[0]["cik"]
+            facts = client.company_facts(cik)
             series = extractor.extract(facts)
             loader.load(
-                ticker, facts["entityName"], meta["cik"], series
+                ticker, facts["entityName"], cik, series
             )
             print(f"{ticker}: " + ", ".join(
                 f"{m} {min(v)}--{max(v)} ({len(v)}y)" for m,v in series.items()

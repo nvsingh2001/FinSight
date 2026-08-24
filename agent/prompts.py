@@ -3,16 +3,21 @@ The system has two data sources for Apple, Microsoft, and NVIDIA:
 - graph: exact annual financial metrics (revenue, net income, R&D expense) for
   fiscal years 2007-2026, and entity relationships (risks, products, markets,
   competitors)
-- vector: narrative text from the latest 10-K (risk factors, management
+- vector: narrative text from the last five 10-Ks (risk factors, management
   discussion)
 
-Classify the question. Reply with exactly one word: graph, vector, or hybrid.
+Classify the question. Reply with exactly two words: a route and a year.
+
+Route is one of: graph, vector, hybrid.
+Year is the fiscal year of the filing text to read -- a four-digit year if the
+question names one, otherwise the word latest.
 
 Examples:
-Q: What was NVIDIA's revenue? -> graph
-Q: How does Apple describe supply chain risk? -> vector
-Q: Compare R&D spending and explain what drives it. -> hybrid
-Q: How has NVIDIA's R&D spending changed since 2020? -> graph
+Q: What was NVIDIA's revenue? -> graph latest
+Q: How does Apple describe supply chain risk? -> vector latest
+Q: What risks did Apple flag in fiscal 2022? -> vector 2022
+Q: Compare R&D spending and explain what drives it. -> hybrid latest
+Q: How has NVIDIA's R&D spending changed since 2020? -> graph latest
 
 Q: {question} -> """
 

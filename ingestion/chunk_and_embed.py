@@ -8,8 +8,15 @@ from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from qdrant_client.http import models as qmodels
 
 from ingestion.parser import TenKParser
+
+COLLECTION = "finsight_filings"
+INDEXED_FIELDS = {
+    "metadata.fiscal_year": qmodels.PayloadSchemaType.KEYWORD,
+    "metadata.is_latest": qmodels.PayloadSchemaType.BOOL,
+}
 
 
 class IngestionPipeline:
@@ -31,27 +38,29 @@ class IngestionPipeline:
         metadata = json.loads((self.raw_dir / "metadata.json").read_text())
         docs = []
 
-        for ticker, meta in metadata.items():
-            html = (self.raw_dir / meta["file"]).read_text()
-            sections = self.parser.parse(html)
+        for ticker, filings in metadata.items():
+            latest = max(f["fiscal_year"] for f in filings)
 
-            for name, body in sections.items():
-                print(
-                    f"{ticker}/{name}: {len(body) // 1000}k chars | {body[:150]}...\n"
-                )
-                for chunk in self.splitter.split_text(body):
-                    docs.append(
-                        Document(
-                            page_content=chunk,
-                            metadata={
-                                "ticker": ticker,
-                                "section": name,
-                                "fiscal_year": meta["fiscal_year"],
-                            },
+            for meta in filings:
+                html = (self.raw_dir / meta["file"]).read_text()
+                sections = self.parser.parse(html)
+                print(f"{ticker} FY{meta['fiscal_year']}: {len(sections)} sections")
+
+                for name, body in sections.items():
+                    for chunk in self.splitter.split_text(body):
+                        docs.append(
+                            Document(
+                                page_content=chunk,
+                                metadata={
+                                    "ticker": ticker,
+                                    "section": name,
+                                    "fiscal_year": meta["fiscal_year"],
+                                    "is_latest": meta["fiscal_year"] == latest,
+                                },
+                            )
                         )
-                    )
 
-            print(f"total chunks: {len(docs)}")
+        print(f"total chunks: {len(docs)}")
         return docs
 
     def save(self, docs):
@@ -60,14 +69,19 @@ class IngestionPipeline:
         (self.processed_dir / "chunks.json").write_text(json.dumps(payload, indent=2))
 
     def embed(self, docs):
-        QdrantVectorStore.from_documents(
+        store = QdrantVectorStore.from_documents(
             docs,
             FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
             url=os.environ["QDRANT_URL"],
             api_key=os.environ["QDRANT_API_KEY"],
-            collection_name="finsight_filings",
+            collection_name=COLLECTION,
             force_recreate=True,
         )
+
+        # Qdrant refuses to filter on an unindexed payload field, and
+        # force_recreate drops the indexes along with the collection.
+        for field, schema in INDEXED_FIELDS.items():
+            store.client.create_payload_index(COLLECTION, field, field_schema=schema)
 
         print("Embedded into qdrant")
 

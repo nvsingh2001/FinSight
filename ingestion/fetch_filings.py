@@ -6,6 +6,7 @@ from pathlib import Path
 import requests
 
 TICKERS = ["AAPL", "MSFT", "NVDA"]
+YEARS = 5
 
 
 @dataclass
@@ -49,25 +50,30 @@ class EdgarClient:
     def cik_map(self):
         if self._cik_map is None:
             data = self._get(self.TICKER_MAP_URL).json()
-            self._cik_map = {e["ticker"]: e["cik_str"] for e in data.values()} 
+            self._cik_map = {e["ticker"]: e["cik_str"] for e in data.values()}
         return self._cik_map
 
-    def latest_10k(self, ticker):
+    def recent_10ks(self, ticker, limit=YEARS):
         cik = self.cik_map[ticker]
         url = self.SUBMISSIONS_URL.format(cik=cik)
         recent = self._get(url).json()["filings"]["recent"]
 
-        for i, form in enumerate(recent["form"]):
-            if form == "10-K":
-                return Filing(
-                    ticker=ticker,
-                    cik=cik,
-                    accession=recent["accessionNumber"][i],
-                    primary_doc=recent["primaryDocument"][i],
-                    report_date=recent["reportDate"][i],
-                )
+        filings = [
+            Filing(
+                ticker=ticker,
+                cik=cik,
+                accession=recent["accessionNumber"][i],
+                primary_doc=recent["primaryDocument"][i],
+                report_date=recent["reportDate"][i],
+            )
+            for i, form in enumerate(recent["form"])
+            if form == "10-K"
+        ][:limit]
 
-        raise ValueError(f"no 10-K found for {ticker}")
+        if not filings:
+            raise ValueError(f"no 10-K found for {ticker}")
+
+        return filings
 
     def download(self, filing):
         url = self.ARCHIVES_URL.format(
@@ -89,12 +95,16 @@ def main():
     metadata = {}
 
     for ticker in TICKERS:
-        filing = client.latest_10k(ticker)
-        html = client.download(filing)
+        metadata[ticker] = []
 
-        (raw_dir / filing.filename).write_text(html)
-        metadata[ticker] = asdict(filing) | {"fiscal_year": filing.fiscal_year,"file": filing.filename}
-        print(f"{ticker}: saved {filing.filename} ({len(html) // 1024} KB)")
+        for filing in client.recent_10ks(ticker):
+            html = client.download(filing)
+            (raw_dir / filing.filename).write_text(html)
+            metadata[ticker].append(
+                asdict(filing)
+                | {"fiscal_year": filing.fiscal_year, "file": filing.filename}
+            )
+            print(f"{ticker}: saved {filing.filename} ({len(html) // 1024} KB)")
 
     (raw_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
