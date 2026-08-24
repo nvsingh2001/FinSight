@@ -5,6 +5,7 @@ from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_neo4j import Neo4jGraph
 from langchain_ollama import ChatOllama
 from langchain_qdrant import QdrantVectorStore
+from qdrant_client.http import models as qmodels
 
 from agent.prompts import CYPHER_PROMPT, GENERATE_PROMPT, GRADE_PROMPT, ROUTER_PROMPT
 from agent.state import AgentState
@@ -29,19 +30,18 @@ class AgentNodes:
 
         self.fast_llm = ChatOllama(
             model="gpt-oss:20b-cloud",
-            base_url="https://ollama.com",
-            client_kwargs={
+            base_url="https://ollama.com", client_kwargs={
                 "headers": {"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"}
             },
             temperature=0,
         )
 
-        self.retriever = QdrantVectorStore.from_existing_collection(
+        self.vectorstore = QdrantVectorStore.from_existing_collection(
             embedding=FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
             collection_name="finsight_filings",
             url=os.environ["QDRANT_URL"],
             api_key=os.environ["QDRANT_API_KEY"],
-        ).as_retriever(search_kwargs={"k": 6})
+        )
 
         self.graph = Neo4jGraph(
             url=os.environ["NEO4J_URI"],
@@ -53,21 +53,50 @@ class AgentNodes:
     def _ask(self, prompt, llm):
         return llm.invoke(prompt).content.strip()
 
+    def _year_filter(self, year):
+        if year == "latest":
+            return qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="metadata.is_latest", match=qmodels.MatchValue(value=True)
+                    )
+                ]
+            )
+        return qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="metadata.fiscal_year", match=qmodels.MatchValue(value=year)
+                )
+            ]
+        )
+
     def route(self, state: AgentState):
-        answer = self._ask(ROUTER_PROMPT.format(question=state["question"]), llm=self.fast_llm).lower()
-        return {
-            "route": answer if answer in ("vector", "graph", "hybrid") else "hybrid"
-        }
+        answer = self._ask(
+            ROUTER_PROMPT.format(question=state["question"]), llm=self.fast_llm
+        ).lower()
+        tokens = re.findall(r"[a-z]+|\d{4}", answer)
+
+        route = next(
+            (t for t in tokens if t in ("vector", "graph", "hybrid")), "hybrid"
+        )
+        year = next((t for t in tokens if t.isdigit()), "latest")
+
+        return {"route": route, "year": year}
 
     def retrieve_vector(self, state: AgentState):
-        return {"documents": self.retriever.invoke(state["question"])}
+        docs = self.vectorstore.similarity_search(
+            state["question"],
+            k=6,
+            filter=self._year_filter(state.get("year", "latest")),
+        )
+        return {"documents": docs}
 
     def retrieve_graph(self, state: AgentState):
         cypher = self._ask(
             CYPHER_PROMPT.format(
                 schema=self.graph.get_schema, question=state["question"]
             ),
-            llm=self.llm
+            llm=self.llm,
         )
 
         cypher = re.sub(r"^```(?:cypher)?|```$", "", cypher, flags=re.MULTILINE).strip()
@@ -83,7 +112,8 @@ class AgentNodes:
 
     def generate(self, state: AgentState):
         docs = "\n\n".join(
-            f"[{d.metadata['ticker']} / {d.metadata['section']}]\n{d.page_content}"
+            f"[{d.metadata['ticker']} FY{d.metadata['fiscal_year']} / {d.metadata['section']}]"
+            f"\n{d.page_content}"
             for d in state.get("documents", [])
         )
 
@@ -93,7 +123,7 @@ class AgentNodes:
                 documents=docs or "none",
                 question=state["question"],
             ),
-            llm=self.llm
+            llm=self.llm,
         )
 
         return {"generation": answer}
@@ -106,7 +136,7 @@ class AgentNodes:
                 context=context[:6000],
                 generation=state["generation"],
             ),
-            llm=self.fast_llm
+            llm=self.fast_llm,
         ).lower()
 
         return {
