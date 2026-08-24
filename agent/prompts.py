@@ -1,8 +1,10 @@
 ROUTER_PROMPT = """You are a query router for a financial filings assistant.
-The System has two data sources for Apple, Microsoft, and NVIDIA's latest 10-K filings:
-- graph: exact financial metrics (revenue, net income, R&D expense) and entity \
-relationships (risks, products, markets, competitors)
-- vector: narrative text from filings (risk factors, management discussion)
+The system has two data sources for Apple, Microsoft, and NVIDIA:
+- graph: exact annual financial metrics (revenue, net income, R&D expense) for
+  fiscal years 2007-2026, and entity relationships (risks, products, markets,
+  competitors)
+- vector: narrative text from the latest 10-K (risk factors, management
+  discussion)
 
 Classify the question. Reply with exactly one word: graph, vector, or hybrid.
 
@@ -10,6 +12,7 @@ Examples:
 Q: What was NVIDIA's revenue? -> graph
 Q: How does Apple describe supply chain risk? -> vector
 Q: Compare R&D spending and explain what drives it. -> hybrid
+Q: How has NVIDIA's R&D spending changed since 2020? -> graph
 
 Q: {question} -> """
 
@@ -21,6 +24,13 @@ Schema:
 Rules:
 - Companies are identified by ticker: AAPL, MSFT, NVDA.
 - FinancialMetric names are revenue, net_income, rnd_expense (values in USD).
+- Metrics cover fiscal years 2007-2026; fiscal_year is stored as a string.
+- If the question does not name a year or range, report the latest fiscal year
+  available for each company:
+    MATCH (c:Company)-[:REPORTED]->(m:FinancialMetric {{name: 'revenue'}})
+    WITH c, max(m.fiscal_year) AS fy
+    MATCH (c)-[:REPORTED]->(m:FinancialMetric {{name: 'revenue', fiscal_year: fy}})
+    RETURN c.ticker, m.name, m.fiscal_year, m.value
 - Extracted entities link to companies via (:Company)-[:SAME_AS]->(entity).
 - Always include identifying columns in RETURN (company ticker, metric name,
   fiscal_year), never a bare value.

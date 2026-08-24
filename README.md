@@ -2,7 +2,8 @@
 
 A financial research assistant over SEC 10-K filings. Combines vector search (Qdrant) with a knowledge graph (Neo4j), orchestrated by a LangGraph agent that routes each query to the right retrieval path.
 
-Covers the latest annual filings of Apple, Microsoft, and NVIDIA.
+Covers the latest annual filings of Apple, Microsoft, and NVIDIA, plus 19 fiscal
+years of reported financials for each.
 
 - UI: https://finsight-app-ce27.up.railway.app
 - API docs: https://finsight-production-f255.up.railway.app/docs
@@ -11,7 +12,7 @@ Covers the latest annual filings of Apple, Microsoft, and NVIDIA.
 
 Questions fall into two kinds, and they need different retrieval.
 
-"What was NVIDIA's revenue?" wants an exact number. Those live in Neo4j as `FinancialMetric` nodes loaded from the SEC's XBRL API, so the agent writes a Cypher query and reads the value straight from the graph. No arithmetic is done by the model.
+"What was NVIDIA's revenue?" wants an exact number. Those live in Neo4j as `FinancialMetric` nodes loaded from the SEC's XBRL API — every fiscal year each company has reported, not just the latest — so the agent writes a Cypher query and reads the value straight from the graph. No arithmetic is done by the model.
 
 "How does Apple describe its supply chain risks?" wants language from the filing. Those chunks live in Qdrant, retrieved by embedding similarity.
 
@@ -89,6 +90,7 @@ curl -X POST localhost:8000/query \
 
 - What was NVIDIA's revenue in its latest fiscal year?
 - How does Apple describe its supply chain risks?
+- How has NVIDIA's revenue changed since 2020?
 - Compare R&D spending across the three companies and explain what drives it.
 - How much did Microsoft spend on R&D, and what risks does it see in its AI investments?
 

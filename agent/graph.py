@@ -64,6 +64,7 @@ def main():
         "What was NVIDIA's revenue in its latest fiscal year?",
         "How does Apple describe its supply chain risks?",
         "Compare R&D spending across the three companies and explain what drives it.",
+        "How has NVIDIA's revenue changed since 2020?",
     ]
 
     for q in questions:
