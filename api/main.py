@@ -2,17 +2,26 @@ import json
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.graph import build_graph
+from agent.nodes import AgentNodes
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_dotenv()
-    app.state.agent = build_graph()
+    nodes = AgentNodes()
+    app.state.agent = build_graph(nodes)
+
+    try:
+        app.state.stats = nodes.corpus_stats()
+    except Exception as e:
+        print(f"corpus stats unavailable: {e}")
+        app.state.stats = None
+
     yield
 
 
@@ -38,12 +47,29 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     route: str
+    year: str
     retries: int
+
+
+class StatsResponse(BaseModel):
+    companies: int
+    filings: int
+    fiscal_years: int
+    first_year: str
+    last_year: str
+    chunks: int
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/stats", response_model=StatsResponse)
+def stats(request: Request):
+    if request.app.state.stats is None:
+        raise HTTPException(status_code=503, detail="corpus stats unavailable")
+    return request.app.state.stats
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -54,6 +80,7 @@ def query(req: QueryRequest, request: Request):
     return QueryResponse(
         answer=result["generation"],
         route=result["route"],
+        year=result["year"],
         retries=result["retry_count"],
     )
 
@@ -94,6 +121,7 @@ async def query_stream(req: QueryRequest, request: Request):
             {
                 "type": "done",
                 "route": final.get("route"),
+                "year": final.get("year"),
                 "retries": final.get("retry_count", 0),
             }
         ) + "\n"

@@ -10,6 +10,8 @@ from qdrant_client.http import models as qmodels
 from agent.prompts import CYPHER_PROMPT, GENERATE_PROMPT, GRADE_PROMPT, ROUTER_PROMPT
 from agent.state import AgentState
 
+COLLECTION = "finsight_filings"
+
 FORBIDDEN_CYPHER = re.compile(
     r"\b(CREATE|DELETE|DETACH|MERGE|SET|REMOVE|DROP)\b", re.IGNORECASE
 )
@@ -38,7 +40,7 @@ class AgentNodes:
 
         self.vectorstore = QdrantVectorStore.from_existing_collection(
             embedding=FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
-            collection_name="finsight_filings",
+            collection_name=COLLECTION,
             url=os.environ["QDRANT_URL"],
             api_key=os.environ["QDRANT_API_KEY"],
         )
@@ -52,6 +54,49 @@ class AgentNodes:
 
     def _ask(self, prompt, llm):
         return llm.invoke(prompt).content.strip()
+
+    def corpus_stats(self):
+        companies = self.graph.query(
+            "MATCH (c:Company) WHERE c.ticker IS NOT NULL RETURN count(c) AS n"
+        )[0]["n"]
+
+        years = self.graph.query(
+            "MATCH (c:Company)-[:REPORTED]->(m:FinancialMetric) "
+            "WITH c, count(DISTINCT m.fiscal_year) AS y, "
+            "     min(m.fiscal_year) AS lo, max(m.fiscal_year) AS hi "
+            "RETURN max(y) AS years, min(lo) AS first_year, max(hi) AS last_year"
+        )[0]
+
+        client = self.vectorstore.client
+        tickers = client.facet(COLLECTION, "metadata.ticker", limit=100, exact=True)
+        filings = 0
+        for hit in tickers.hits:
+            by_ticker = qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="metadata.ticker",
+                        match=qmodels.MatchValue(value=hit.value),
+                    )
+                ]
+            )
+            filings += len(
+                client.facet(
+                    COLLECTION,
+                    "metadata.fiscal_year",
+                    facet_filter=by_ticker,
+                    limit=100,
+                    exact=True,
+                ).hits
+            )
+
+        return {
+            "companies": companies,
+            "filings": filings,
+            "fiscal_years": years["years"],
+            "first_year": years["first_year"],
+            "last_year": years["last_year"],
+            "chunks": client.count(COLLECTION).count,
+        }
 
     def _year_filter(self, year):
         if year == "latest":

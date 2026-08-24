@@ -20,8 +20,8 @@ def _after_grade(state: AgentState):
     return "retry"
 
 
-def build_graph():
-    nodes = AgentNodes()
+def build_graph(nodes=None):
+    nodes = nodes or AgentNodes()
     workflow = StateGraph(AgentState)
 
     workflow.add_node("route", nodes.route)
