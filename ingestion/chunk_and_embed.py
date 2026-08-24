@@ -16,6 +16,7 @@ COLLECTION = "finsight_filings"
 INDEXED_FIELDS = {
     "metadata.fiscal_year": qmodels.PayloadSchemaType.KEYWORD,
     "metadata.is_latest": qmodels.PayloadSchemaType.BOOL,
+    "metadata.ticker": qmodels.PayloadSchemaType.KEYWORD,
 }
 
 
@@ -78,8 +79,6 @@ class IngestionPipeline:
             force_recreate=True,
         )
 
-        # Qdrant refuses to filter on an unindexed payload field, and
-        # force_recreate drops the indexes along with the collection.
         for field, schema in INDEXED_FIELDS.items():
             store.client.create_payload_index(COLLECTION, field, field_schema=schema)
 
