@@ -4,6 +4,9 @@ data/processed
 __pycache__/
 
 finsight_project_plan.md
+DOCUMENTATION.md
+FinSight-Documentation.pdf
+docs-build/
 
 finsight/
 

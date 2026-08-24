@@ -9,7 +9,7 @@ from neo4j import GraphDatabase
 from ingestion.fetch_filings import EdgarClient
 
 CONCEPTS = {
-    "revenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"],
+    "revenue": ["RevenueFromContractWithCustomerExcludingAssessedTax","SalesRevenueNet" ,"Revenues"],
     "net_income": ["NetIncomeLoss"],
     "rnd_expense": ["ResearchAndDevelopmentExpense"],
 }
@@ -19,38 +19,32 @@ class FinancialsExtractor:
     """Pulls annual metrics for one fiscal year out of a CompanyFacts response."""
 
     @staticmethod
-    def _annual_value(concept_data, report_date):
-        for entry in concept_data["units"]["USD"]:
-            if (
-                entry.get("form") == "10-K"
-                and entry.get("end") == report_date
-                and "start" in entry
-                and (
-                    date.fromisoformat(entry["end"])
-                    - date.fromisoformat(entry["start"])
-                ).days
-                > 300
-            ):
-                return entry["val"]
+    def _annual_series(concept_data):
+        """{fiscal_year: value} for every annual figure reported on a 10-K."""
+        values = {}
+        for entry in concept_data["units"].get("USD", []):
+            if entry.get("form") != "10-K" or "start" not in entry:
+                continue
+            span = date.fromisoformat(entry["end"]) - date.fromisoformat(entry["start"])
+            if span.days <= 300:
+                continue
+            values[entry["end"][:4]] = entry["val"]
+        return values
 
-        return None
-
-    def extract(self, facts, report_date):
+    def extract(self, facts):
         gaap = facts["facts"]["us-gaap"]
-        metrics = {}
+        series = {}
         for metric, candidates in CONCEPTS.items():
-            value = None
+            values = {}
             for concept in candidates:
                 if concept in gaap:
-                    value = self._annual_value(gaap[concept], report_date)
-                    if value is not None:
-                        break
-            if value is None:
+                    values = self._annual_series(gaap[concept]) | values
+            if not values:
                 print(f"  warning: no value found for {metric}")
                 continue
-            metrics[metric] = value
+            series[metric] = values
 
-        return metrics
+        return series 
 
 
 class GraphLoader:
@@ -70,17 +64,18 @@ class GraphLoader:
     def close(self):
         self.driver.close()
 
-    def load(self, ticker, name, cik, fiscal_year, metrics):
-        for metric, value in metrics.items():
-            self.driver.execute_query(
-                self.WRITE_METRIC,
-                ticker=ticker,
-                name=name,
-                cik=cik,
-                metric=metric,
-                fy=fiscal_year,
-                value=value,
-            )
+    def load(self, ticker, name, cik, series):
+        for metric, values in series.items():
+            for fiscal_year, value in values.items():
+                self.driver.execute_query(
+                    self.WRITE_METRIC,
+                    ticker=ticker,
+                    name=name,
+                    cik=cik,
+                    metric=metric,
+                    fy=fiscal_year,
+                    value=value,
+                )
 
 
 def main():
@@ -98,11 +93,13 @@ def main():
     try:
         for ticker, meta in metadata.items():
             facts = client.company_facts(meta["cik"])
-            metrics = extractor.extract(facts, meta["report_date"])
+            series = extractor.extract(facts)
             loader.load(
-                ticker, facts["entityName"], meta["cik"], meta["fiscal_year"], metrics
+                ticker, facts["entityName"], meta["cik"], series
             )
-            print(f"{ticker}: {metrics}")
+            print(f"{ticker}: " + ", ".join(
+                f"{m} {min(v)}--{max(v)} ({len(v)}y)" for m,v in series.items()
+            ))
     finally:
         loader.close()
 
