@@ -36,6 +36,13 @@ Rules:
     WITH c, max(m.fiscal_year) AS fy
     MATCH (c)-[:REPORTED]->(m:FinancialMetric {{name: 'revenue', fiscal_year: fy}})
     RETURN c.ticker, m.name, m.fiscal_year, m.value
+- If the question compares companies or asks which one leads on a metric,
+  return every company's value ordered by it -- never LIMIT to a single row.
+  Whoever reads these results needs every candidate's number to state the
+  comparison with evidence, not just the name of the winner:
+    MATCH (c:Company)-[:REPORTED]->(m:FinancialMetric {{name: 'revenue', fiscal_year: '2022'}})
+    RETURN c.ticker, m.name, m.fiscal_year, m.value
+    ORDER BY m.value DESC
 - Extracted entities link to companies via (:Company)-[:SAME_AS]->(entity).
 - Always include identifying columns in RETURN (company ticker, metric name,
   fiscal_year), never a bare value.
