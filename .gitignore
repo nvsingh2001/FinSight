@@ -1,5 +1,6 @@
 data/raw
 data/processed
+eval/results
 .env
 __pycache__/
 
