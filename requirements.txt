@@ -16,3 +16,4 @@ pydantic
 uvicorn
 streamlit
 langgraph
+langfuse>=4,<5
