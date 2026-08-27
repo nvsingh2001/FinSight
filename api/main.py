@@ -4,25 +4,37 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from langfuse import propagate_attributes
 from pydantic import BaseModel, Field
 
+from agent.connections import GraphConnections
 from agent.graph import build_graph
 from agent.nodes import AgentNodes
+from agent.stats import CorpusStats
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_dotenv()
-    nodes = AgentNodes()
-    app.state.agent = build_graph(nodes)
+    connections = GraphConnections()
+    app.state.connections = connections
+    app.state.agent = build_graph(AgentNodes(connections))
 
     try:
-        app.state.stats = nodes.corpus_stats()
+        app.state.stats = CorpusStats(connections).compute()
     except Exception as e:
         print(f"corpus stats unavailable: {e}")
         app.state.stats = None
 
+    try:
+        if not connections.langfuse.auth_check():
+            print("langfuse: auth check failed, tracing may not work")
+    except Exception as e:
+        print(f"langfuse auth check failed: {e}")
+
     yield
+
+    connections.langfuse.flush()
 
 
 app = FastAPI(
@@ -74,9 +86,12 @@ def stats(request: Request):
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest, request: Request):
-    result = request.app.state.agent.invoke(
-        {"question": req.question, "retry_count": 0}
-    )
+    connections = request.app.state.connections
+    with propagate_attributes(trace_name="finsight-query", tags=["api"]):
+        result = request.app.state.agent.invoke(
+            {"question": req.question, "retry_count": 0},
+            config={"callbacks": [connections.langfuse_handler]},
+        )
     return QueryResponse(
         answer=result["generation"],
         route=result["route"],
@@ -88,34 +103,41 @@ def query(req: QueryRequest, request: Request):
 @app.post("/query/stream")
 async def query_stream(req: QueryRequest, request: Request):
     agent = request.app.state.agent
+    connections = request.app.state.connections
 
     async def events():
         last_node = None
         streamed = False
         final = {}
 
-        async for ev in agent.astream_events(
-            {"question": req.question, "retry_count": 0}, version="v2"
+        with propagate_attributes(
+            trace_name="finsight-query-stream", tags=["api", "streaming"]
         ):
-            kind = ev["event"]
-            node = ev.get("metadata", {}).get("langgraph_node")
+            stream = agent.astream_events(
+                {"question": req.question, "retry_count": 0},
+                version="v2",
+                config={"callbacks": [connections.langfuse_handler]},
+            )
+            async for ev in stream:
+                kind = ev["event"]
+                node = ev.get("metadata", {}).get("langgraph_node")
 
-            if kind == "on_chain_start" and node in NODE_LABELS and node != last_node:
-                last_node = node
-                if node == "route" and streamed:
-                    streamed = False
-                    yield json.dumps({"type": "revising"}) + "\n"
-                yield (
-                    json.dumps({"type": "progress", "stage": NODE_LABELS[node]}) + "\n"
-                )
-            elif kind == "on_chat_model_stream" and node == "generate":
-                text = ev["data"]["chunk"].content
-                if text:
-                    streamed = True
-                    yield json.dumps({"type": "token", "text": text}) + "\n"
+                if kind == "on_chain_start" and node in NODE_LABELS and node != last_node:
+                    last_node = node
+                    if node == "route" and streamed:
+                        streamed = False
+                        yield json.dumps({"type": "revising"}) + "\n"
+                    yield (
+                        json.dumps({"type": "progress", "stage": NODE_LABELS[node]}) + "\n"
+                    )
+                elif kind == "on_chat_model_stream" and node == "generate":
+                    text = ev["data"]["chunk"].content
+                    if text:
+                        streamed = True
+                        yield json.dumps({"type": "token", "text": text}) + "\n"
 
-            elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
-                final = ev["data"]["output"]
+                elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
+                    final = ev["data"]["output"]
 
         yield json.dumps(
             {
