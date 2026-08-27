@@ -1,16 +1,12 @@
 import os
 import re
 
-from langchain_community.embeddings import FastEmbedEmbeddings
-from langchain_neo4j import Neo4jGraph
 from langchain_ollama import ChatOllama
-from langchain_qdrant import QdrantVectorStore
 from qdrant_client.http import models as qmodels
 
+from agent.connections import GraphConnections
 from agent.prompts import CYPHER_PROMPT, GENERATE_PROMPT, GRADE_PROMPT, ROUTER_PROMPT
 from agent.state import AgentState
-
-COLLECTION = "finsight_filings"
 
 FORBIDDEN_CYPHER = re.compile(
     r"\b(CREATE|DELETE|DETACH|MERGE|SET|REMOVE|DROP)\b", re.IGNORECASE
@@ -20,7 +16,7 @@ FORBIDDEN_CYPHER = re.compile(
 class AgentNodes:
     """Node implementations for the FinSight agent graph."""
 
-    def __init__(self) -> None:
+    def __init__(self, connections=None) -> None:
         self.llm = ChatOllama(
             model="gpt-oss:120b-cloud",
             base_url="https://ollama.com",
@@ -38,65 +34,13 @@ class AgentNodes:
             temperature=0,
         )
 
-        self.vectorstore = QdrantVectorStore.from_existing_collection(
-            embedding=FastEmbedEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5"),
-            collection_name=COLLECTION,
-            url=os.environ["QDRANT_URL"],
-            api_key=os.environ["QDRANT_API_KEY"],
-        )
+        connections = connections or GraphConnections()
+        self.vectorstore = connections.vectorstore
+        self.graph = connections.graph
+        self.langfuse = connections.langfuse
 
-        self.graph = Neo4jGraph(
-            url=os.environ["NEO4J_URI"],
-            username=os.environ["NEO4J_USERNAME"],
-            password=os.environ["NEO4J_PASSWORD"],
-            database=os.environ["NEO4J_DATABASE"],
-        )
-
-    def _ask(self, prompt, llm):
-        return llm.invoke(prompt).content.strip()
-
-    def corpus_stats(self):
-        companies = self.graph.query(
-            "MATCH (c:Company) WHERE c.ticker IS NOT NULL RETURN count(c) AS n"
-        )[0]["n"]
-
-        years = self.graph.query(
-            "MATCH (c:Company)-[:REPORTED]->(m:FinancialMetric) "
-            "WITH c, count(DISTINCT m.fiscal_year) AS y, "
-            "     min(m.fiscal_year) AS lo, max(m.fiscal_year) AS hi "
-            "RETURN max(y) AS years, min(lo) AS first_year, max(hi) AS last_year"
-        )[0]
-
-        client = self.vectorstore.client
-        tickers = client.facet(COLLECTION, "metadata.ticker", limit=100, exact=True)
-        filings = 0
-        for hit in tickers.hits:
-            by_ticker = qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="metadata.ticker",
-                        match=qmodels.MatchValue(value=hit.value),
-                    )
-                ]
-            )
-            filings += len(
-                client.facet(
-                    COLLECTION,
-                    "metadata.fiscal_year",
-                    facet_filter=by_ticker,
-                    limit=100,
-                    exact=True,
-                ).hits
-            )
-
-        return {
-            "companies": companies,
-            "filings": filings,
-            "fiscal_years": years["years"],
-            "first_year": years["first_year"],
-            "last_year": years["last_year"],
-            "chunks": client.count(COLLECTION).count,
-        }
+    def _ask(self, prompt, llm, name):
+        return llm.invoke(prompt, config={"run_name": name}).content.strip()
 
     def _year_filter(self, year):
         if year == "latest":
@@ -117,7 +61,9 @@ class AgentNodes:
 
     def route(self, state: AgentState):
         answer = self._ask(
-            ROUTER_PROMPT.format(question=state["question"]), llm=self.fast_llm
+            ROUTER_PROMPT.format(question=state["question"]),
+            llm=self.fast_llm,
+            name="route-classify",
         ).lower()
         tokens = re.findall(r"[a-z]+|\d{4}", answer)
 
@@ -129,11 +75,25 @@ class AgentNodes:
         return {"route": route, "year": year}
 
     def retrieve_vector(self, state: AgentState):
-        docs = self.vectorstore.similarity_search(
-            state["question"],
-            k=6,
-            filter=self._year_filter(state.get("year", "latest")),
-        )
+        year = state.get("year", "latest")
+        with self.langfuse.start_as_current_observation(
+            as_type="retriever",
+            name="vector-search",
+            input={"question": state["question"], "year": year},
+        ) as obs:
+            docs = self.vectorstore.similarity_search(
+                state["question"], k=6, filter=self._year_filter(year)
+            )
+            obs.update(
+                output=[
+                    {
+                        "ticker": d.metadata.get("ticker"),
+                        "fiscal_year": d.metadata.get("fiscal_year"),
+                        "section": d.metadata.get("section"),
+                    }
+                    for d in docs
+                ]
+            )
         return {"documents": docs}
 
     def retrieve_graph(self, state: AgentState):
@@ -142,18 +102,26 @@ class AgentNodes:
                 schema=self.graph.get_schema, question=state["question"]
             ),
             llm=self.llm,
+            name="generate-cypher",
         )
 
         cypher = re.sub(r"^```(?:cypher)?|```$", "", cypher, flags=re.MULTILINE).strip()
 
-        if FORBIDDEN_CYPHER.search(cypher):
-            return {"graph_results": []}
+        with self.langfuse.start_as_current_observation(
+            as_type="retriever", name="graph-query", input=cypher
+        ) as obs:
+            if FORBIDDEN_CYPHER.search(cypher):
+                obs.update(output=[], metadata={"blocked": "forbidden_cypher"})
+                return {"graph_results": []}
 
-        try:
-            return {"graph_results": self.graph.query(cypher)}
-        except Exception as e:
-            print(f"cypher failed: {e}")
-            return {"graph_results": []}
+            try:
+                results = self.graph.query(cypher)
+                obs.update(output=results)
+                return {"graph_results": results}
+            except Exception as e:
+                print(f"cypher failed: {e}")
+                obs.update(output=[], metadata={"error": str(e)})
+                return {"graph_results": []}
 
     def generate(self, state: AgentState):
         docs = "\n\n".join(
@@ -169,6 +137,7 @@ class AgentNodes:
                 question=state["question"],
             ),
             llm=self.llm,
+            name="generate-answer",
         )
 
         return {"generation": answer}
@@ -182,6 +151,7 @@ class AgentNodes:
                 generation=state["generation"],
             ),
             llm=self.fast_llm,
+            name="grade-verdict",
         ).lower()
 
         return {
