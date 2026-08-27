@@ -56,9 +56,15 @@ def build_graph(nodes=None):
 
 def main():
     from dotenv import load_dotenv
+    from langfuse import propagate_attributes
+
+    from agent.connections import GraphConnections
 
     load_dotenv()
-    agent = build_graph()
+    connections = GraphConnections()
+    agent = build_graph(AgentNodes(connections))
+
+    agent.get_graph().draw_mermaid_png(output_file_path="my_graph.png")
 
     questions = [
         "What was NVIDIA's revenue in its latest fiscal year?",
@@ -68,10 +74,16 @@ def main():
     ]
 
     for q in questions:
-        result = agent.invoke({"question": q, "retry_count": 0})
+        with propagate_attributes(trace_name="finsight-query-cli", tags=["cli"]):
+            result = agent.invoke( #type: ignore
+                {"question": q, "retry_count": 0},
+                config={"callbacks": [connections.langfuse_handler]},
+            )
         print(f"\nQ: {q}")
         print(f"route={result['route']} retries={result['retry_count']}")
         print(result["generation"])
+
+    connections.langfuse.flush()
 
 
 if __name__ == "__main__":
