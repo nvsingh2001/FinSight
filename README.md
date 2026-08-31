@@ -44,7 +44,7 @@ source finsight/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` with:
+Create a `.env` with the keys in `.env.example`:
 
 ```
 OLLAMA_API_KEY=
@@ -54,7 +54,13 @@ NEO4J_URI=
 NEO4J_USERNAME=
 NEO4J_PASSWORD=
 NEO4J_DATABASE=
+
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_BASE_URL=
 ```
+
+The `LANGFUSE_*` keys are optional — without them tracing is a no-op.
 
 ## Building the data
 
@@ -79,6 +85,8 @@ streamlit run ui/app.py
 The UI reads `FINSIGHT_API_URL` and falls back to `http://localhost:8000`.
 
 The API exposes `POST /query` for a single JSON response and `POST /query/stream` for newline-delimited events (`progress`, `token`, `revising`, `done`).
+
+Every query is traced with [Langfuse](https://langfuse.com) — routing, retrieval, Cypher generation, and each LLM call show up as their own spans, so a request can be inspected without a scratch script.
 
 ```bash
 curl -X POST localhost:8000/query \
