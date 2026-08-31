@@ -77,7 +77,6 @@ class GraphExtractor:
                 continue
             taken[meta["ticker"]] += 1
 
-            # 10-Ks say "the Company"; give each chunk its identity back
             name = NAMES[meta["ticker"]]
             text = (
                 f"[Excerpt from {name}'s 10-K annual report. "
